@@ -5,4 +5,5 @@ library enhanced_meteorify;
 
 export 'src/accounts/accounts.dart';
 export 'src/meteor/meteor.dart';
+export 'src/ddp/ddp.dart';
 export 'src/meteor/subscribed_collection.dart';

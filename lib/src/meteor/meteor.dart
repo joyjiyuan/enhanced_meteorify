@@ -1,9 +1,12 @@
 import 'dart:async';
 import 'dart:convert';
 
+import 'package:crypto/crypto.dart';
 import 'package:ddp/ddp.dart';
+import 'package:enhanced_meteorify/enhanced_meteorify.dart';
 import 'package:enhanced_meteorify/src/utils/utils.dart';
 import 'package:mongo_dart/mongo_dart.dart';
+import 'package:rxdart/rxdart.dart';
 import 'subscribed_collection.dart';
 
 /// An enum for describing the [ConnectionStatus].
@@ -13,10 +16,80 @@ enum ConnectionStatus { CONNECTED, DISCONNECTED }
 typedef MeteorConnectionListener = void Function(
     ConnectionStatus connectionStatus);
 
+class MeteorClientLoginResult {
+  String userId;
+  String token;
+  DateTime tokenExpires;
+  MeteorClientLoginResult({this.userId, this.token, this.tokenExpires});
+}
+
+class MeteorError extends Error {
+  String details;
+  int error;
+  String errorType;
+  bool isClientSafe;
+  String message;
+  String reason;
+  String stack;
+
+  MeteorError.parse(Map<String, dynamic> object) {
+    try {
+      details = object['details']?.toString();
+      error = object['error'] is String
+          ? int.parse(object['error'])
+          : object['error'];
+      errorType = object['errorType']?.toString();
+      isClientSafe = object['isClientSafe'] == true;
+      message = object['message']?.toString();
+      reason = object['reason']?.toString();
+      stack = object['stack']?.toString();
+    } catch (_) {}
+  }
+
+  @override
+  String toString() {
+    return '''
+isClientSafe: $isClientSafe
+errorType: $errorType
+error: $error
+details: $details
+message: $message
+reason: $reason
+stack: $stack
+''';
+  }
+}
+
 /// Provides useful methods for interacting with the Meteor server.
 ///
 /// Provided methods use the same syntax as of the [Meteor] class used by the Meteor framework.
 class Meteor {
+  DDP connection;
+
+  BehaviorSubject<DDPConnectionStatus> _statusSubject = BehaviorSubject();
+  Stream<DDPConnectionStatus> _statusStream;
+
+  BehaviorSubject<bool> _loginSubject = BehaviorSubject();
+  Stream<bool> _loginStream;
+
+  BehaviorSubject<String> _userIdSubject = BehaviorSubject();
+  Stream<String> _userIdStream;
+
+  BehaviorSubject<Map<String, dynamic>> _userSubject = BehaviorSubject();
+  Stream<Map<String, dynamic>> _userStream;
+
+  String _userId;
+  String _token;
+  DateTime _tokenExpires;
+  bool _loggingIn = false;
+
+  Map<String, SubscriptionHandler> _subscriptions = {};
+
+  /// Meteor.collections
+  Map<String, Map<String, dynamic>> _collections = {};
+  Map<String, BehaviorSubject<Map<String, dynamic>>> _collectionsSubject = {};
+  Map<String, Stream<Map<String, dynamic>>> collections = {};
+
   /// The client used to interact with DDP framework.
   static DdpClient _client;
 
@@ -52,78 +125,186 @@ class Meteor {
 
   static int mongoDbPort;
 
+  Meteor.connect({String url}) {
+    url = url.replaceFirst(RegExp(r'^http'), 'ws');
+    if (!url.endsWith('websocket')) {
+      url = url.replaceFirst(RegExp(r'/$'), 'to') + '/websocket';
+    }
+    print('connecting to $url');
+    connection = DDP(url: url);
+
+    connection.status().listen((status) {
+      _statusSubject.add(status);
+    })
+      ..onError((dynamic error) {
+        _statusSubject.addError(error);
+      })
+      ..onDone(() {
+        _statusSubject.close();
+      });
+    _statusStream = _statusSubject.stream;
+
+    _loginStream = _loginSubject.stream;
+    _userIdStream = _userIdSubject.stream;
+    _userStream = _userSubject.stream;
+
+    createCollection('users');
+
+    connection.dataStreamController.stream.listen((data) {
+      String collection = data['collection'];
+      String id = data['id'];
+      dynamic fields = data['fields'];
+
+      if (fields != null) {
+        fields['_id'] = id;
+      }
+
+      if (_collections[collection] == null) {
+        _collections[collection] = {};
+        _collectionsSubject[collection] =
+            BehaviorSubject<Map<String, dynamic>>();
+        collections[collection] = _collectionsSubject[collection].stream;
+      }
+
+      if (data['msg'] == 'removed') {
+        _collections[collection].remove(id);
+      } else if (data['msg'] == 'added') {
+        if (fields != null) {
+          _collections[collection][id] = fields;
+        }
+      } else if (data['msg'] == 'changed') {
+        if (fields != null) {
+          fields.forEach((k, v) {
+            if (_collections[collection][id] != null &&
+                _collections[collection][id] is Map) {
+              _collections[collection][id][k] = v;
+            }
+          });
+        } else if (data['cleared'] != null && data['cleared'] is List) {
+          List<dynamic> clearList = data['cleared'];
+          if (_collections[collection][id] != null &&
+              _collections[collection][id] is Map) {
+            clearList.forEach((k) {
+              _collections[collection][id].remove(k);
+            });
+          }
+        }
+      }
+
+      _collectionsSubject[collection].add(_collections[collection]);
+      if (collection == 'users' && id == _userId) {
+        _userSubject.add(_collections['users'][_userId]);
+      }
+    })
+      ..onError((dynamic error) {})
+      ..onDone(() {});
+
+    connection.onReconnect((OnReconnectionCallback reconnectionCallback) {
+      print('reconnecting');
+      _loginWithExistingToken().catchError((error) {});
+    });
+
+    userId().listen((userId) {
+      _userSubject.add(_collections['users'][userId]);
+    });
+  }
+
+  void createCollection(String collection) {
+    if (_collections[collection] == null) {
+      _collections[collection] = {};
+      var subject = _collectionsSubject[collection] =
+          BehaviorSubject<Map<String, dynamic>>();
+      collections[collection] = subject.stream;
+    }
+  }
+
   /// Connect to the Meteor framework using the [url].
   /// Takes an optional parameter [autoLoginOnReconnect] which, if true would login the current user again with the [_sessionToken] when the server reconnects.
   /// Takes another optional parameter [heartbeatInterval] which indicates the duration after which the client checks if the connection is still alive.
   ///
   /// Returns a [ConnectionStatus] wrapped in [Future].
-  static Future<ConnectionStatus> connect(String url,
-      {bool autoLoginOnReconnect = false,
-      Duration heartbeatInterval = const Duration(minutes: 1),
-      int dbPort = 3001}) async {
-    mongoDbPort = dbPort;
-    ConnectionStatus connectionStatus =
-        await _connectToServer(url, heartbeatInterval);
-    _client.removeStatusListener(_statusListener);
+  // static Future<ConnectionStatus> connect(String url,
+  //     {bool autoLoginOnReconnect = false,
+  //     Duration heartbeatInterval = const Duration(minutes: 1),
+  //     int dbPort = 3001}) async {
+  //   mongoDbPort = dbPort;
+  //   ConnectionStatus connectionStatus =
+  //       await _connectToServer(url, heartbeatInterval);
+  //   _client.removeStatusListener(_statusListener);
 
-    _statusListener = (status) {
-      if (status == ConnectStatus.connected) {
-        isConnected = true;
-        if (autoLoginOnReconnect && _sessionToken != null) {
-          loginWithToken(_sessionToken);
-        }
-        _notifyConnected();
-      } else if (status == ConnectStatus.disconnected) {
-        isConnected = false;
-        _notifyDisconnected();
-      }
-    };
-    _client.addStatusListener(_statusListener);
-    return connectionStatus;
+  //   _statusListener = (status) {
+  //     if (status == ConnectStatus.connected) {
+  //       isConnected = true;
+  //       if (autoLoginOnReconnect && _sessionToken != null) {
+  //         loginWithToken(_sessionToken);
+  //       }
+  //       _notifyConnected();
+  //     } else if (status == ConnectStatus.disconnected) {
+  //       isConnected = false;
+  //       _notifyDisconnected();
+  //     }
+  //   };
+  //   _client.addStatusListener(_statusListener);
+  //   return connectionStatus;
+  // }
+
+  Stream<Map<String, dynamic>> user() {
+    return _userStream;
+  }
+
+  Map<String, dynamic> userCurrentValue() {
+    return _userSubject.value;
+  }
+
+  /// Get the current user id, or null if no user is logged in. A reactive data source.
+  Stream<String> userId() {
+    return _userIdStream;
+  }
+
+  String userIdCurrentValue() {
+    return _userIdSubject.value;
+  }
+
+  /// A Map containing user documents.
+  Stream<Map<String, dynamic>> get users => collections['users'];
+
+  /// True if a login method (such as Meteor.loginWithPassword, Meteor.loginWithFacebook, or Accounts.createUser) is currently in progress.
+  /// A reactive data source.
+  Stream<bool> loggingIn() {
+    return _loginStream;
   }
 
   /// Connect to Meteor framework using the [url].
   /// Takes an another parameter [heartbeatInterval] which indicates the duration after which the client checks if the connection is still alive.
   ///
   /// Returns a [ConnectionStatus] wrapped in a future.
-  static Future<ConnectionStatus> _connectToServer(
-      String url, Duration heartbeatInterval) async {
-    Completer<ConnectionStatus> completer = Completer<ConnectionStatus>();
+  // static Future<ConnectionStatus> _connectToServer(
+  //     String url, Duration heartbeatInterval) async {
+  //   Completer<ConnectionStatus> completer = Completer<ConnectionStatus>();
 
-    _connectionUrl = url;
-    _client = DdpClient('meteor', _connectionUrl, 'meteor');
-    _client.heartbeatInterval = heartbeatInterval;
-    _client.connect();
+  //   _connectionUrl = url;
+  //   _client = DdpClient('meteor', _connectionUrl, 'meteor');
+  //   _client.heartbeatInterval = heartbeatInterval;
+  //   _client.connect();
 
-    _statusListener = (status) {
-      if (status == ConnectStatus.connected) {
-        isConnected = true;
-        _notifyConnected();
-        if (!completer.isCompleted) {
-          completer.complete(ConnectionStatus.CONNECTED);
-        }
-      } else if (status == ConnectStatus.disconnected) {
-        isConnected = false;
-        _notifyDisconnected();
-        if (!completer.isCompleted) {
-          completer.completeError(ConnectionStatus.DISCONNECTED);
-        }
-      }
-    };
-    _client.addStatusListener(_statusListener);
-    return completer.future;
-  }
-
-  /// Disconnect from Meteor framework.
-  static void disconnect() {
-    _client.close();
-    _notifyDisconnected();
-  }
-
-  /// Reconnect with the Meteor framework.
-  static void reconnect() {
-    _client.reconnect();
-  }
+  //   _statusListener = (status) {
+  //     if (status == ConnectStatus.connected) {
+  //       isConnected = true;
+  //       _notifyConnected();
+  //       if (!completer.isCompleted) {
+  //         completer.complete(ConnectionStatus.CONNECTED);
+  //       }
+  //     } else if (status == ConnectStatus.disconnected) {
+  //       isConnected = false;
+  //       _notifyDisconnected();
+  //       if (!completer.isCompleted) {
+  //         completer.completeError(ConnectionStatus.DISCONNECTED);
+  //       }
+  //     }
+  //   };
+  //   _client.addStatusListener(_statusListener);
+  //   return completer.future;
+  // }
 
   /// Notifies the [_connectionListener] about the network connected status.
   static void _notifyConnected() {
@@ -151,23 +332,72 @@ class Meteor {
   /// Login using the user's [email] or [username] and [password].
   ///
   /// Returns the `loginToken` after logging in.
-  static Future<String> loginWithPassword(String user, String password) async {
-    Completer completer = Completer<String>();
-    if (isConnected) {
-      var query;
-      if (!user.contains('@')) {
-        query = {'username': user};
-      } else {
-        query = {'email': user};
-      }
-      var result = await _client.call('login', [
-        {'password': password, 'user': query}
-      ]);
-      print(result.reply);
-      _notifyLoginResult(result, completer);
-      return completer.future;
+  // static Future<String> loginWithPassword(String user, String password) async {
+  //   Completer completer = Completer<String>();
+  //   if (isConnected) {
+  //     var query;
+  //     if (!user.contains('@')) {
+  //       query = {'username': user};
+  //     } else {
+  //       query = {'email': user};
+  //     }
+  //     var result = await _client.call('login', [
+  //       {'password': password, 'user': query}
+  //     ]);
+  //     print(result.reply);
+  //     _notifyLoginResult(result, completer);
+  //     return completer.future;
+  //   }
+  //   completer.completeError('Not connected to server');
+  //   return completer.future;
+  // }
+
+  Future<MeteorClientLoginResult> loginWithPassword(
+      String user, String password,
+      {int delayOnLoginErrorSecond = 0}) {
+    Completer<MeteorClientLoginResult> completer = Completer();
+    _loggingIn = true;
+    _loginSubject.add(_loggingIn);
+
+    var selector;
+    if (!user.contains('@')) {
+      selector = {'username': user};
+    } else {
+      selector = {'email': user};
     }
-    completer.completeError('Not connected to server');
+
+    call('login', [
+      {
+        'user': selector,
+        'password': {
+          'digest': sha256.convert(utf8.encode(password)).toString(),
+          'algorithm': 'sha-256'
+        },
+      }
+    ]).then((result) {
+      _userId = result['id'];
+      _token = result['token'];
+      _tokenExpires =
+          DateTime.fromMillisecondsSinceEpoch(result['tokenExpires']['\$date']);
+      _loggingIn = false;
+      _loginSubject.add(_loggingIn);
+      _userIdSubject.add(_userId);
+      completer.complete(MeteorClientLoginResult(
+        userId: _userId,
+        token: _token,
+        tokenExpires: _tokenExpires,
+      ));
+    }).catchError((error) {
+      Future.delayed(Duration(seconds: delayOnLoginErrorSecond), () {
+        _userId = null;
+        _token = null;
+        _tokenExpires = null;
+        _loggingIn = false;
+        _loginSubject.add(_loggingIn);
+        _userIdSubject.add(_userId);
+        completer.completeError(error);
+      });
+    });
     return completer.future;
   }
 
@@ -269,6 +499,52 @@ class Meteor {
     return completer.future;
   }
 
+  Future<MeteorClientLoginResult> _loginWithExistingToken() {
+    Completer<MeteorClientLoginResult> completer = Completer();
+    print('Trying to login with existing token...');
+    print('Token is ${_token}');
+    if (_tokenExpires != null) {
+      print('Token expires ${_tokenExpires.toString()}');
+      print('now is ${DateTime.now()}');
+      print(
+          'Token expires is after now ${_tokenExpires.isAfter(DateTime.now())}');
+    }
+
+    if (_token != null &&
+        _tokenExpires != null &&
+        _tokenExpires.isAfter(DateTime.now())) {
+      _loggingIn = true;
+      _loginSubject.add(_loggingIn);
+      call('login', [
+        {'resume': _token}
+      ]).then((result) {
+        _userId = result['id'];
+        _token = result['token'];
+        _tokenExpires = DateTime.fromMillisecondsSinceEpoch(
+            result['tokenExpires']['\$date']);
+        _loggingIn = false;
+        _loginSubject.add(_loggingIn);
+        _userIdSubject.add(_userId);
+        completer.complete(MeteorClientLoginResult(
+          userId: _userId,
+          token: _token,
+          tokenExpires: _tokenExpires,
+        ));
+      }).catchError((error) {
+        _userId = null;
+        _token = null;
+        _tokenExpires = null;
+        _loggingIn = false;
+        _loginSubject.add(_loggingIn);
+        _userIdSubject.add(_userId);
+        completer.completeError(error);
+      });
+    } else {
+      completer.complete(null);
+    }
+    return completer.future;
+  }
+
   /// Used internally to notify the future about success/failure of login process.
   static void _notifyLoginResult(Call result, Completer completer) {
     String userId = result.reply['id'];
@@ -349,18 +625,30 @@ class Meteor {
   /// Subscribe to a subscription using the [subscriptionName].
   ///
   /// Returns the `subscriptionId` as a [String].
-  static Future<String> subscribe(String subscriptionName,
-      {List<dynamic> args = const []}) async {
-    Completer<String> completer = Completer<String>();
-    Call result = await _client.sub(subscriptionName, args);
-    if (result.error != null && result.error.toString().contains('nosub')) {
-      print('Error: ${result.error.toString()}');
-      completer.completeError(
-          'Subscription $subscriptionName not found with given set of parameters');
-    } else {
-      completer.complete(result.id);
+  // static Future<String> subscribe(String subscriptionName,
+  //     {List<dynamic> args = const []}) async {
+  //   Completer<String> completer = Completer<String>();
+  //   Call result = await _client.sub(subscriptionName, args);
+  //   if (result.error != null && result.error.toString().contains('nosub')) {
+  //     print('Error: ${result.error.toString()}');
+  //     completer.completeError(
+  //         'Subscription $subscriptionName not found with given set of parameters');
+  //   } else {
+  //     completer.complete(result.id);
+  //   }
+  //   return completer.future;
+  // }
+
+  SubscriptionHandler subscribe(String name, List<dynamic> params,
+      {Function onStop(dynamic error), Function onReady}) {
+    // TODO: not subscribe with same name and params.
+    SubscriptionHandler handler =
+        connection.subscribe(name, params, onStop: onStop, onReady: onReady);
+    if (_subscriptions[name] != null) {
+      _subscriptions[name].stop();
     }
-    return completer.future;
+    _subscriptions[name] = handler;
+    return handler;
   }
 
   /// Unsubscribe from a subscription using the [subscriptionId] returned by [subscribe].
@@ -394,15 +682,56 @@ class Meteor {
   /// Makes a call to a service method exported from Meteor using the [methodName] and list of [arguments].
   ///
   /// Returns the value returned by the service method or an error using a [Future].
-  static Future<dynamic> call(
-      String methodName, List<dynamic> arguments) async {
-    Completer<dynamic> completer = Completer<dynamic>();
-    var result = await _client.call(methodName, arguments);
-    if (result.error != null) {
-      completer.completeError(result.error);
-    } else {
-      completer.complete(result.reply);
+  // static Future<dynamic> call(
+  //     String methodName, List<dynamic> arguments) async {
+  //   Completer<dynamic> completer = Completer<dynamic>();
+  //   var result = await _client.call(methodName, arguments);
+  //   if (result.error != null) {
+  //     completer.completeError(result.error);
+  //   } else {
+  //     completer.complete(result.reply);
+  //   }
+  //   return completer.future;
+  // }
+
+  /// Invoke a method passing an array of arguments.
+  ///
+  /// `name` Name of method to invoke
+  ///
+  /// `args` List of method arguments
+  Future<dynamic> call(String name, List<dynamic> args) async {
+    try {
+      return await connection.call(name, args);
+    } catch (e) {
+      throw MeteorError.parse(e);
     }
-    return completer.future;
+  }
+
+  /// Invoke a method passing an array of arguments.
+  ///
+  /// `name` Name of method to invoke
+  ///
+  /// `args` List of method arguments
+  Future<dynamic> apply(String name, List<dynamic> args) async {
+    try {
+      return await connection.apply(name, args);
+    } catch (e) {
+      throw MeteorError.parse(e);
+    }
+  }
+
+  Stream<DDPConnectionStatus> status() {
+    return _statusStream;
+  }
+
+  /// Force an immediate reconnection attempt if the client is not connected to the server.
+  /// This method does nothing if the client is already connected.
+  void reconnect() {
+    connection.reconnect();
+  }
+
+  /// Disconnect the client from the server.
+  void disconnect() {
+    connection.disconnect();
   }
 }
