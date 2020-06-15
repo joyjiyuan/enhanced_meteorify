@@ -218,36 +218,6 @@ class Meteor {
     }
   }
 
-  /// Connect to the Meteor framework using the [url].
-  /// Takes an optional parameter [autoLoginOnReconnect] which, if true would login the current user again with the [_sessionToken] when the server reconnects.
-  /// Takes another optional parameter [heartbeatInterval] which indicates the duration after which the client checks if the connection is still alive.
-  ///
-  /// Returns a [ConnectionStatus] wrapped in [Future].
-  // static Future<ConnectionStatus> connect(String url,
-  //     {bool autoLoginOnReconnect = false,
-  //     Duration heartbeatInterval = const Duration(minutes: 1),
-  //     int dbPort = 3001}) async {
-  //   mongoDbPort = dbPort;
-  //   ConnectionStatus connectionStatus =
-  //       await _connectToServer(url, heartbeatInterval);
-  //   _client.removeStatusListener(_statusListener);
-
-  //   _statusListener = (status) {
-  //     if (status == ConnectStatus.connected) {
-  //       isConnected = true;
-  //       if (autoLoginOnReconnect && _sessionToken != null) {
-  //         loginWithToken(_sessionToken);
-  //       }
-  //       _notifyConnected();
-  //     } else if (status == ConnectStatus.disconnected) {
-  //       isConnected = false;
-  //       _notifyDisconnected();
-  //     }
-  //   };
-  //   _client.addStatusListener(_statusListener);
-  //   return connectionStatus;
-  // }
-
   Stream<Map<String, dynamic>> user() {
     return _userStream;
   }
@@ -274,52 +244,6 @@ class Meteor {
     return _loginStream;
   }
 
-  /// Connect to Meteor framework using the [url].
-  /// Takes an another parameter [heartbeatInterval] which indicates the duration after which the client checks if the connection is still alive.
-  ///
-  /// Returns a [ConnectionStatus] wrapped in a future.
-  // static Future<ConnectionStatus> _connectToServer(
-  //     String url, Duration heartbeatInterval) async {
-  //   Completer<ConnectionStatus> completer = Completer<ConnectionStatus>();
-
-  //   _connectionUrl = url;
-  //   _client = DdpClient('meteor', _connectionUrl, 'meteor');
-  //   _client.heartbeatInterval = heartbeatInterval;
-  //   _client.connect();
-
-  //   _statusListener = (status) {
-  //     if (status == ConnectStatus.connected) {
-  //       isConnected = true;
-  //       _notifyConnected();
-  //       if (!completer.isCompleted) {
-  //         completer.complete(ConnectionStatus.CONNECTED);
-  //       }
-  //     } else if (status == ConnectStatus.disconnected) {
-  //       isConnected = false;
-  //       _notifyDisconnected();
-  //       if (!completer.isCompleted) {
-  //         completer.completeError(ConnectionStatus.DISCONNECTED);
-  //       }
-  //     }
-  //   };
-  //   _client.addStatusListener(_statusListener);
-  //   return completer.future;
-  // }
-
-  /// Notifies the [_connectionListener] about the network connected status.
-  static void _notifyConnected() {
-    if (_connectionListener != null) {
-      _connectionListener(ConnectionStatus.CONNECTED);
-    }
-  }
-
-  /// Notifies the [_connectionListener] about the network disconnected status.
-  static void _notifyDisconnected() {
-    if (_connectionListener != null) {
-      _connectionListener(ConnectionStatus.DISCONNECTED);
-    }
-  }
-
 /*
  * Methods associated with authentication
  */
@@ -328,29 +252,6 @@ class Meteor {
   static bool isLoggedIn() {
     return _currentUserId != null;
   }
-
-  /// Login using the user's [email] or [username] and [password].
-  ///
-  /// Returns the `loginToken` after logging in.
-  // static Future<String> loginWithPassword(String user, String password) async {
-  //   Completer completer = Completer<String>();
-  //   if (isConnected) {
-  //     var query;
-  //     if (!user.contains('@')) {
-  //       query = {'username': user};
-  //     } else {
-  //       query = {'email': user};
-  //     }
-  //     var result = await _client.call('login', [
-  //       {'password': password, 'user': query}
-  //     ]);
-  //     print(result.reply);
-  //     _notifyLoginResult(result, completer);
-  //     return completer.future;
-  //   }
-  //   completer.completeError('Not connected to server');
-  //   return completer.future;
-  // }
 
   Future<MeteorClientLoginResult> loginWithPassword(
       String user, String password,
@@ -622,26 +523,8 @@ class Meteor {
  * Methods associated with subscriptions
  */
 
-  /// Subscribe to a subscription using the [subscriptionName].
-  ///
-  /// Returns the `subscriptionId` as a [String].
-  // static Future<String> subscribe(String subscriptionName,
-  //     {List<dynamic> args = const []}) async {
-  //   Completer<String> completer = Completer<String>();
-  //   Call result = await _client.sub(subscriptionName, args);
-  //   if (result.error != null && result.error.toString().contains('nosub')) {
-  //     print('Error: ${result.error.toString()}');
-  //     completer.completeError(
-  //         'Subscription $subscriptionName not found with given set of parameters');
-  //   } else {
-  //     completer.complete(result.id);
-  //   }
-  //   return completer.future;
-  // }
-
   SubscriptionHandler subscribe(String name, List<dynamic> params,
       {Function onStop(dynamic error), Function onReady}) {
-    // TODO: not subscribe with same name and params.
     SubscriptionHandler handler =
         connection.subscribe(name, params, onStop: onStop, onReady: onReady);
     if (_subscriptions[name] != null) {
