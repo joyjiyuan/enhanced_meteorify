@@ -94,8 +94,8 @@ class Meteor {
   /// Returns a [ConnectionStatus] wrapped in [Future].
   static Future<ConnectionStatus> connect(String url,
       {bool autoLoginOnReconnect = false,
-      Duration heartbeatInterval = const Duration(seconds: 25)}) async {
-    var connectionStatus = await _connectToServer(url, heartbeatInterval);
+      Duration reconnectInterval = const Duration(seconds: 25)}) async {
+    var connectionStatus = await _connectToServer(url, reconnectInterval);
     _client.removeStatusListener(_statusListener);
 
     var _token = await Utils.getString('token');
@@ -124,12 +124,12 @@ class Meteor {
   ///
   /// Returns a [ConnectionStatus] wrapped in a future.
   static Future<ConnectionStatus> _connectToServer(
-      String url, Duration heartbeatInterval) async {
+      String url, Duration reconnectInterval) async {
     var completer = Completer<ConnectionStatus>();
 
     _connectionUrl = url;
-    _client = DdpClient('meteor', _connectionUrl, 'meteor');
-    _client.heartbeatInterval = heartbeatInterval;
+    _client = DdpClient('meteor', _connectionUrl, 'meteor',
+        reconnectInterval: reconnectInterval);
     _client.connect();
 
     _statusListener = (status) {
