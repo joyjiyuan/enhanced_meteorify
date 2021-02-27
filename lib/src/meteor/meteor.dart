@@ -93,8 +93,7 @@ class Meteor {
   ///
   /// Returns a [ConnectionStatus] wrapped in [Future].
   static Future<ConnectionStatus> connect(String url,
-      {bool autoLoginOnReconnect = false,
-      Duration reconnectInterval = const Duration(seconds: 25)}) async {
+      {bool autoLoginOnReconnect = false, Duration reconnectInterval}) async {
     var connectionStatus = await _connectToServer(url, reconnectInterval);
     _client.removeStatusListener(_statusListener);
 
