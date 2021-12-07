@@ -90,7 +90,7 @@ class Meteor {
     bool enableLogs = true,
   }) async {
     _enableLogs = enableLogs;
-    var connectionStatus = await _connectToServer(url);
+    var connectionStatus = await _connectToServer(url, reconnectInterval);
     _client!.removeStatusListener(_statusListener!);
 
     var _token = await Utils.getString('token');
@@ -120,11 +120,13 @@ class Meteor {
   /// Returns a [ConnectionStatus] wrapped in a future.
   static Future<ConnectionStatus> _connectToServer(
     String url,
+    Duration reconnectInterval,
   ) async {
     var completer = Completer<ConnectionStatus>();
 
     _connectionUrl = url;
-    _client = DDP(_connectionUrl!, enableLogs: _enableLogs);
+    _client = DDP(_connectionUrl!,
+        enableLogs: _enableLogs, reconnectInterval: reconnectInterval);
     _client!.connect();
 
     _statusListener = (status) {
