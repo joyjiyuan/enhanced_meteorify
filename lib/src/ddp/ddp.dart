@@ -150,7 +150,7 @@ class DDP implements ConnectionNotifier, StatusNotifier {
       ReconnectListenersHolder();
 
   DDP(this._url,
-      {this.reconnectInterval = const Duration(seconds: 30),
+      {this.reconnectInterval = const Duration(seconds: 1),
       bool enableLogs = true}) {
     this._url = _url;
     this._serverId = '';

@@ -86,7 +86,7 @@ class Meteor {
   static Future<ConnectionStatus> connect(
     String url, {
     bool autoLoginOnReconnect = false,
-    Duration reconnectInterval = const Duration(seconds: 30),
+    Duration reconnectInterval = const Duration(seconds: 1),
     bool enableLogs = true,
   }) async {
     _enableLogs = enableLogs;
