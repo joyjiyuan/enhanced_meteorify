@@ -320,6 +320,7 @@ class DDP implements ConnectionNotifier, StatusNotifier {
       this._pong();
     };
     this._messageHandlers!['pong'] = (msg) {
+      print('我收到了pong');
       this._ping();
     };
     this._messageHandlers!['nosub'] = (msg) {
