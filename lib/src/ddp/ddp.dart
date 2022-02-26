@@ -314,14 +314,12 @@ class DDP implements ConnectionNotifier, StatusNotifier {
       this._version = '1';
       this._sessionId = msg['session'] as String;
       this._connectionListener!.forEach((l) => l());
-      this._ping();
     };
     this._messageHandlers!['ping'] = (msg) {
       this._pong();
     };
     this._messageHandlers!['pong'] = (msg) {
-      print('get pong');
-      //this._ping();
+      this._ping();
     };
     this._messageHandlers!['nosub'] = (msg) {
       if (msg.containsKey('id')) {
