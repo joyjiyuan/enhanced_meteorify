@@ -334,6 +334,7 @@ class DDP implements ConnectionNotifier, StatusNotifier {
       this._version = '1';
       this._sessionId = msg['session'] as String;
       this._connectionListener!.forEach((l) => l());
+      _startPingTimer();
     };
     this._messageHandlers!['ping'] = (msg) {
       this._pong();
