@@ -236,6 +236,7 @@ class DDP implements ConnectionNotifier, StatusNotifier {
           ws, Message.connect(this._sessionId, this._version, this._support));
       _waitingForConnect = false;
       _reconnectListenersHolder.onConnected();
+      _ping();
     } catch (err) {
       Log.error('DDP::ERROR::ON CONNECT: $err');
       this._reconnectLater();
