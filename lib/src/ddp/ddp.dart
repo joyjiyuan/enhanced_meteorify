@@ -236,7 +236,6 @@ class DDP implements ConnectionNotifier, StatusNotifier {
           ws, Message.connect(this._sessionId, this._version, this._support));
       _waitingForConnect = false;
       _reconnectListenersHolder.onConnected();
-      _ping();
     } catch (err) {
       Log.error('DDP::ERROR::ON CONNECT: $err');
       this._reconnectLater();
@@ -315,12 +314,14 @@ class DDP implements ConnectionNotifier, StatusNotifier {
       this._version = '1';
       this._sessionId = msg['session'] as String;
       this._connectionListener!.forEach((l) => l());
+      this._ping();
     };
     this._messageHandlers!['ping'] = (msg) {
       this._pong();
     };
     this._messageHandlers!['pong'] = (msg) {
-      this._ping();
+      print('get pong');
+      //this._ping();
     };
     this._messageHandlers!['nosub'] = (msg) {
       if (msg.containsKey('id')) {
