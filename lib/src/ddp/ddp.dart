@@ -137,6 +137,9 @@ class DDP implements ConnectionNotifier, StatusNotifier {
 
   Timer? _reconnectTimer;
 
+  ///心跳计时器
+  Timer? _pingTimer;
+
   Map<String, Call>? _calls;
   Map<String, Call>? _subs;
   Map<String, Call>? _unsubs;
@@ -307,6 +310,23 @@ class DDP implements ConnectionNotifier, StatusNotifier {
     }
   }
 
+  void _startPingTimer() {
+    print('启动心跳计时器');
+    if (_pingTimer == null) {
+      _pingTimer = Timer(Duration(seconds: 16), () {
+        print('重连');
+        this.reconnect();
+      });
+    } else {
+      print('按时收到心跳');
+      _pingTimer!.cancel();
+      _pingTimer = Timer(Duration(seconds: 16), () {
+        print('重连');
+        this.reconnect();
+      });
+    }
+  }
+
   void _initMessageHandlers() {
     this._messageHandlers = {};
     this._messageHandlers!['connected'] = (msg) {
@@ -317,9 +337,9 @@ class DDP implements ConnectionNotifier, StatusNotifier {
     };
     this._messageHandlers!['ping'] = (msg) {
       this._pong();
+      _startPingTimer();
     };
     this._messageHandlers!['pong'] = (msg) {
-      print('我收到了pong');
       this._ping();
     };
     this._messageHandlers!['nosub'] = (msg) {
